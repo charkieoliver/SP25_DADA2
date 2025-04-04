@@ -1,5 +1,10 @@
 These scripts serve as a record of the processing work done for the spring 2025 amplicon sequencing run. 
 They can be easily adapted to fit other amplicon sequencing runs. 
+______________________________________________________________________________________________________
+
+Raw sequence files can be found in the peta library in the following directory:
+/pl/active/schmidt-extrm/lab_sequences/2025_amplicon_illumina/18S
+______________________________________________________________________________________________________
 
 Troubleshooting tips for errors while demultiplexing:
 If the demultiplexing step reuturns errors, or outputs very low sequence counts try these steps:
