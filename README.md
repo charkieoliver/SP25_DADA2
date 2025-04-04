@@ -3,7 +3,7 @@ They can be easily adapted to fit other amplicon sequencing runs.
 ______________________________________________________________________________________________________
 
 Raw sequence files can be found in the peta library in the following directory:
-/pl/active/schmidt-extrm/lab_sequences/2025_amplicon_illumina/18S
+/pl/active/schmidt-extrm/lab_sequences/2025_amplicon_illumina/18S or /16S
 ______________________________________________________________________________________________________
 
 Troubleshooting tips for errors while demultiplexing:
