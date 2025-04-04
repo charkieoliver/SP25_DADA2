@@ -1,0 +1,412 @@
+#DADA2 16S processing pipeline for Spring 2025 amplicon sequencing run
+#Revised 04-03-2025
+
+#This script is designed to work on the Alpine/Blanca HPC and directories are structured as such.
+################################################################################
+
+#Set working directories
+setwd("/projects/chol9271/")
+setwd("/projects/chol9271/software/anaconda/envs/bmpliconEnv/")
+
+################################################################################
+#Package install script
+#install.packages("BiocManager",repos = "http://cran.us.r-project.org")
+#install.packages('plyr', repos = "http://cran.us.r-project.org")
+#install.packages('contrib.url', repos = "http://cran.us.r-project.org")
+#install.packages("devtools")
+#BiocManager::install("Rhtslib")
+#BiocManager::install("dada2", version = "3.16")
+#library("devtools")
+#install.packages("Rtools42")
+#This installs the XVector dependency after you have installed it in the blanca terminal
+#BiocManager::install("XVector")
+#library("Rtools")
+#BiocManager::install("Rtools42")
+#devtools::install_github("benjjneb/dada2", INSTALL_opts = '--no-lock')
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+# install.packages("BiocManager")
+#BiocManager::install("dada2")
+#BiocManager::install("Rcpp", version = "1.1")
+################################################################################
+#Load packages:
+library(dada2); packageVersion("dada2") # the dada2 pipeline
+library(ShortRead); packageVersion("ShortRead") # dada2 depends on this
+library(dplyr); packageVersion("dplyr") # for manipulating data
+library(tidyr); packageVersion("tidyr") # for creating the final graph at the end of the pipeline
+library(Hmisc); packageVersion("Hmisc") # for creating the final graph at the end of the pipeline
+library(ggplot2); packageVersion("ggplot2") # for creating the final graph at the end of the pipeline
+library(plotly); packageVersion("plotly") # enables creation of interactive graphs, especially helpful for quality plots
+library("devtools")
+library("BiocManager")
+
+# Set up pathway to idemp (demultiplexing tool) and test
+idemp <- "/projects/chol9271/software/anaconda/envs/bmpliconEnv/idemp/idemp" #this is the path for the Rstudio server. CHANGE for other machines
+system2(idemp) 
+# Check that idemp is in your path and you can run shell commands from R
+# Set up pathway to cutadapt (primer trimming tool) and test
+cutadapt <- "/projects/chol9271/software/anaconda/envs/cutadaptenviro/bin/cutadapt" #this is the path for the Rstudio server. CHANGE for other machines
+system2(cutadapt, args = "--version") # Check by running shell command from R
+################################################################################
+# Set path to shared data folder and contents
+data.fp <- "/projects/chol9271/data/SP2025/16S/2025_Run" #wherever your data is
+barcode.fp <- "/projects/chol9271/data/SP2025/16S/2025_Run"
+# List all files in shared folder to check path
+list.files(data.fp)
+project.fp <- "/projects/chol9271/" # CHANGE ME to your project directory
+list.files(project.fp)
+
+# Set file paths for barcodes file, map file, and fastqs
+barcode.fp <- file.path(barcode.fp, "SP2025_16S_MapFile.txt") # .txt file: barcode </t> sampleID
+#map.fp <- file.path(data.fp, "PFXMapfile.txt")
+I1.fp <- file.path(data.fp, "Undetermined_S0_L001_I1_001.fastq.gz")
+R1.fp <- file.path(data.fp, "Undetermined_S0_L001_R1_001.fastq.gz")
+R2.fp <- file.path(data.fp, "Undetermined_S0_L001_R2_001.fastq.gz")
+
+# Set up names of sub directories to stay organized (do this because it will create so many files; it is nice to have dedicated subdirectories)
+preprocess.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/preprocess")
+demultiplex.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/demultiplex")
+filtN.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/filtN")
+trimmed.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/trimmed")
+filter.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/filter")
+table.fp <- file.path("/projects/chol9271/R_outputs/SP2025_Outputs/16S/tabletax")
+
+#################HERE START DEMULTIPLEXING#######################
+# Call the demultiplexing script - It is a preprocessing of DADA2
+# Demultiplexing splits your reads out into separate files based on the barcodes associated with each sample. 
+flags <- paste("-b", barcode.fp, "-I1", I1.fp, "-R1", R1.fp, "-R2", R2.fp, "-o", demultiplex.fp)
+system2(idemp, args = flags)
+
+# Look at output of demultiplexing
+list.files(demultiplex.fp) # there are sample names.
+# Clean up the output from idemp
+# Change names of unassignable reads so they are not included in downstream processing
+
+unassigned_1 <- paste0("mv", " ", demultiplex.fp, "/Undetermined_S0_L001_R1_001.fastq.gz_unsigned.fastq.gz",
+                       " ", demultiplex.fp, "/Unassigned_reads1.fastq.gz")
+
+unassigned_2 <- paste0("mv", " ", demultiplex.fp, "/Undetermined_S0_L001_R2_001.fastq.gz_unsigned.fastq.gz", 
+                       " ", demultiplex.fp, "/Unassigned_reads2.fastq.gz")
+system(unassigned_1)
+system(unassigned_2)
+################################################################################
+#Filtering Ns
+
+#################HERE START FILTERING Ns###########################
+
+# Rename files - use gsub to get names in order!
+R1_names <- gsub(paste0(demultiplex.fp, "/Undetermined_S0_L001_R1_001.fastq.gz_"), "", 
+                 list.files(demultiplex.fp, pattern="R1_", full.names = TRUE)) 
+file.rename(list.files(demultiplex.fp, pattern="R1_", full.names = TRUE),
+            paste0(demultiplex.fp, "/R1_", R1_names))
+R1_names
+R2_names <- gsub(paste0(demultiplex.fp, "/Undetermined_S0_L001_R2_001.fastq.gz_"), "", 
+                 list.files(demultiplex.fp, pattern="R2_", full.names = TRUE)) 
+file.rename(list.files(demultiplex.fp, pattern="R2_", full.names = TRUE),
+            paste0(demultiplex.fp, "/R2_", R2_names))
+R2_names
+# Get full paths for all files and save them for downstream analyses
+# Forward and reverse fastq filenames have format: 
+fnFs <- sort(list.files(demultiplex.fp, pattern="R1_", full.names = TRUE))
+fnRs <- sort(list.files(demultiplex.fp, pattern="R2_", full.names = TRUE))
+
+#Filtrar
+# Pre-filter to remove sequence reads with Ns
+# Ambiguous bases will make it hard for cutadapt to find short primer sequences in the reads.
+# To solve this problem, we will remove sequences with ambiguous bases (Ns)
+# Name the N-filtered files to put them in filtN/ subdirectory
+fnFs.filtN <- file.path(preprocess.fp, "filtN", basename(fnFs))
+fnRs.filtN <- file.path(preprocess.fp, "filtN", basename(fnRs))
+print("HERE_print_fnFs_Rs")
+print(fnFs.filtN)
+print(fnRs.filtN)
+
+# Filter Ns from reads and put them into the filtN directory
+filterAndTrim(fnFs, fnFs.filtN, fnRs, fnRs.filtN, maxN = 0, multithread = FALSE, verbose = TRUE) 
+# CHANGE multithread to FALSE on Windows (here and elsewhere in the program)
+
+################################################################################
+#Cutadapt
+
+#####################CALL OBJECTS AND FILE PATHS FROM PREVIOUS STEP###########
+fnFs <- sort(list.files(demultiplex.fp, pattern="R1_", full.names = TRUE))
+fnRs <- sort(list.files(demultiplex.fp, pattern="R2_", full.names = TRUE))
+fnFs.filtN <- file.path(preprocess.fp, "filtN", basename(fnFs))
+fnRs.filtN <- file.path(preprocess.fp, "filtN", basename(fnRs))
+
+####################HERE START CUTADAPT#######################################
+#Set up the primer sequences to pass along to cutadapt
+FWD <- "GTGYCAGCMGCCGCGGTAA"  ### this is 515F 
+REV <- "GGACTACNVGGGTWTCTAAT"  ### this is 806R
+
+# Write a function that creates a list of all orientations of the primers
+allOrients <- function(primer) {
+  # Create all orientations of the input sequence
+  require(Biostrings)
+  dna <- DNAString(primer)# The Biostrings works w/ DNAString objects rather than character vectors
+  #print(dna)
+  orients <- c(Forward = dna, Complement = complement(dna), Reverse = reverse(dna),
+               RevComp = reverseComplement(dna))
+  return(sapply(orients, toString))  # Convert back to character vector
+}
+# Save the primer orientations to pass to cutadapt
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+print(FWD.orients)
+
+# Write a function that counts how many time primers appear in a sequence
+print("Primer Hits")
+primerHits <- function(primer, fn) {
+  # Counts number of reads in which the primer is found
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+  return(sum(nhits > 0))
+}
+print(fnFs.filtN[1])
+print(fnFs.filtN[3])
+print(fnFs.filtN[8])
+
+#Before ruining cutadapt, we will look at primer detection for the first sample, as a check. 
+#There may be some primers here, we will remove them below using cutadapt.
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[1]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.filtN[[1]]),
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filtN[[1]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[1]]))
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[3]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.filtN[[3]]),
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filtN[[3]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[3]]))
+# 
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.filtN[[8]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.filtN[[8]]),
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.filtN[[8]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.filtN[[8]]))
+
+# Remove primers with cutadapt and assess the output
+# But first: Create directory to hold the output from cutadapt
+if (!dir.exists(trimmed.fp)) dir.create(trimmed.fp)
+print(fnFs)
+fnFs.cut <- file.path(trimmed.fp, basename(fnFs))
+fnRs.cut <- file.path(trimmed.fp, basename(fnRs))
+
+# Save the reverse complements of the primers to variables
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+
+##  Create the cutadapt flags ##
+# # Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+R1.flags <- paste("-g", FWD, "-a", REV.RC, "--minimum-length 50")
+
+# Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+R2.flags <- paste("-G", REV, "-A", FWD.RC, "--minimum-length 50")
+print(seq_along(fnFs))
+
+# Run Cutadapt
+for (i in seq_along(fnFs)) {
+  print("##############")
+  system2(cutadapt, args = c(R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV from reads
+                             "-o", fnFs.cut[i], "-p", fnRs.cut[i], # output files
+                             fnFs.filtN[i], fnRs.filtN[i])) # input files
+}
+
+#As a sanity check
+print("Sanity check")
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs.cut[[8]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs.cut[[8]]),
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fnFs.cut[[8]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs.cut[[8]]))
+################################################################################
+#Quality Scores
+
+##################NOW STARTS DADA2####################################
+######################QUALITY SCORE PLOT######################################
+#####################CALL OBJECTS AND FILE PATHS FROM PREVIOUS STEP###########
+fnFs <- sort(list.files(demultiplex.fp, pattern="R1_", full.names = TRUE))
+fnRs <- sort(list.files(demultiplex.fp, pattern="R2_", full.names = TRUE))
+fnFs.cut <- file.path(trimmed.fp, basename(fnFs))
+fnRs.cut <- file.path(trimmed.fp, basename(fnRs))
+
+##################NOW STARTS DADA2####################################
+######################QUALITY SCORE PLOT######################################
+#Put filtered reads into separate sub-directories for big data workflow
+#Here new files will appear in the new 02_filter folder
+dir.create(filter.fp)
+subF.fp <- file.path(filter.fp, "preprocessed_F") 
+subR.fp <- file.path(filter.fp, "preprocessed_R") 
+dir.create(subF.fp)
+dir.create(subR.fp)
+
+# Move R1 and R2 from trimmed to separate forward/reverse sub-directories
+fnFs.Q <- file.path(subF.fp,  basename(fnFs)) 
+fnRs.Q <- file.path(subR.fp,  basename(fnRs))
+file.rename(from = fnFs.cut, to = fnFs.Q)
+file.rename(from = fnRs.cut, to = fnRs.Q)
+
+# File parsing; create file names and make sure that forward and reverse files match
+filtpathF <- file.path(subF.fp, "filtered") # files go into preprocessed_F/filtered/
+filtpathR <- file.path(subR.fp, "filtered") # files go into preprocessed_F/filtered/
+fastqFs <- sort(list.files(subF.fp, pattern="fastq.gz"))
+fastqRs <- sort(list.files(subR.fp, pattern="fastq.gz"))
+if(length(fastqFs) != length(fastqRs)) stop("Forward and reverse files do not match.")
+
+#Run quality plots
+#Quality plots for a selection of samples in order to help you determine what # of bp to cut off at (160 was mine) 
+#If the number of samples is 20 or less, plot them all, otherwise, just plot 20 randomly selected samples
+if( length(fastqFs) <= 20) {
+  fwd_qual_plots <- plotQualityProfile(paste0(subF.fp, "/", fastqFs))
+  rev_qual_plots <- plotQualityProfile(paste0(subR.fp, "/", fastqRs))
+} else {
+  rand_samples <- sample(size = 20, 1:length(fastqFs)) # grab 20 random samples to plot
+  fwd_qual_plots <- plotQualityProfile(paste0(subF.fp, "/", fastqFs[rand_samples]))
+  rev_qual_plots <- plotQualityProfile(paste0(subR.fp, "/", fastqRs[rand_samples]))
+}
+par(mar=rep(4,4))
+
+
+fwd_qual_plots 
+rev_qual_plots 
+
+#write plots to my project path bc it won't be visualized.
+saveRDS(fwd_qual_plots, paste0(filter.fp, "/fwd_qual_plots16S.rds"))
+saveRDS(rev_qual_plots, paste0(filter.fp, "/rev_qual_plots16S.rds"))
+
+################################################################################
+#Trimming
+
+##########################TRIMMING BASED ON QUALITY##############################
+print("filterAndTrim")
+
+#The maxEE and truncLen values, will most likely need to be change, especially after viewing your quality plots
+#check the dada2 tutorial (not Fierer Lab) for details on these values and how to change them appropriately
+#Options for maxEE that I have tried before: c(2,2), c(2,5), c(2,7) or Inf, wich means infinite.
+filt_out <- filterAndTrim(fwd=file.path(subF.fp, fastqFs), filt=file.path(filtpathF, fastqFs),
+                          rev=file.path(subR.fp, fastqRs), filt.rev=file.path(filtpathR, fastqRs),
+                          truncLen=c(200,200), maxEE=c(2,2),truncQ=0, maxN=0, rm.phix=TRUE,
+                          compress=TRUE, verbose=TRUE, multithread=FALSE)
+
+# look at how many reads were kept
+head(filt_out) 
+filt_out
+# summary of samples in filt_out by percentage: between 0 and 95% remained, mean of 71 and median 79. with tl=125 and maxee=2
+# changed tl=120 and now 0.35-95% remain, with med 88% and mean 78. I guess there are just a few crummy samples?
+#THIS IS EXTRA CODE TO REMOVE SAMPLES WITH 0 READS IN/OUT
+#filt_out <- filt_out[!(apply(filt_out, 1, function(y) any(y == 0))),]
+#filt_out <-filt_out[complete.cases(filt_out),]
+
+filt_out %>% 
+  data.frame() %>% 
+  mutate(Samples = rownames(.),
+         percent_kept = 100*(reads.out/reads.in)) %>%
+  select(Samples, everything()) %>%
+  summarise(min_remaining = paste0(round(min(percent_kept), 2), "%"), 
+            median_remaining = paste0(round(median(percent_kept), 2), "%"),
+            mean_remaining = paste0(round(mean(percent_kept), 2), "%"), 
+            max_remaining = paste0(round(max(percent_kept), 2), "%"))
+
+################################################################################
+#ESV Inference
+
+#####################CALL OBJECTS AND FILE PATHS FROM PREVIOUS STEP###########
+
+subF.fp <- file.path(filter.fp, "preprocessed_F") 
+subR.fp <- file.path(filter.fp, "preprocessed_R") 
+fastqFs <- sort(list.files(subF.fp, pattern="fastq.gz"))
+fastqRs <- sort(list.files(subR.fp, pattern="fastq.gz"))
+filtpathF <- file.path(subF.fp, "filtered") # files go into preprocessed_F/filtered/
+filtpathR <- file.path(subR.fp, "filtered")
+
+################################INFER ESVs###################################
+# Housekeeping step - set up and verify the file names for the output:
+# File parsing
+filtFs <- list.files(filtpathF, pattern="fastq.gz", full.names = TRUE)
+filtRs <- list.files(filtpathR, pattern="fastq.gz", full.names = TRUE)
+
+# Sample names in order
+sample.names <- substring(basename(filtFs), regexpr("_", basename(filtFs)) + 1) # doesn't drop fastq.gz
+sample.names <- gsub(".fastq.gz", "", sample.names)
+sample.namesR <- substring(basename(filtRs), regexpr("_", basename(filtRs)) + 1) # doesn't drop fastq.gz
+sample.namesR <- gsub(".fastq.gz", "", sample.namesR)
+
+# Double check
+if(!identical(sample.names, sample.namesR)) stop("Forward and reverse files do not match.")
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+#' #### Learn the error rates
+set.seed(16493) # set seed to ensure that randomized steps are replicatable
+
+# Learn forward error rates
+errF <- learnErrors(filtFs, multithread=F)
+
+# Learn reverse error rates
+errR <- learnErrors(filtRs, multithread=F)
+
+
+errF_plot <- plotErrors(errF, nominalQ=FALSE)
+errR_plot <- plotErrors(errR, nominalQ=FALSE)
+
+errF_plot 
+errR_plot 
+
+ggsave("16SerrF_plot.pdf", errF_plot, device="pdf")
+ggsave("16serrR_plot.pdf", errR_plot, device="pdf")
+
+########################################
+
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+
+dadaFs[[1]]
+
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+
+table(nchar(getSequences(seqtab)))
+########################################
+
+# Construct sequence table
+seqtab <- makeSequenceTable(mergers)
+
+# Save table as an r data object file
+dir.create(table.fp)
+saveRDS(seqtab, paste0(table.fp, "/seqtab_final_16S_SP25.rds"))
+seqtab
+
+#Inspect dimensions of the seqtab
+table(nchar(getSequences(seqtab)))
+dim(seqtab)
+
+st.all <- st[,order(colSums(st), decreasing=TRUE)]
+########################################
+# Save table as an r data object file
+
+st <- seqtab
+st.all <- st[,order(colSums(st), decreasing=TRUE)]
+print("Here st.all")
+
+#remove chimeras
+seqtab.nochim <- removeBimeraDenovo(st.all, method="consensus", multithread=TRUE)
+
+print("percentage not chimeric")
+#print percentage of our sequences that were not chimeric.
+100*sum(seqtab.nochim)/sum(st.all)
+
+#Export the RDS table for postprocessing 
+saveRDS(seqtab.nochim, paste0(table.fp, "/seqtab_RMG.nochim.rds"))
+
+#Output read retention per sample
+getN <- function(x) sum(getUniques(x))
+track <- cbind(filt_out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+#Export CSV of results
+write.csv(track, "/projects/chol9271/SP25_18S_ReadRetention.csv")
+################################################################################
+#END DADA2, DATA IS READY FOR POSTPROCESSING
+################################################################################
